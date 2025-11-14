@@ -6,7 +6,7 @@ on:
 jobs:
   run-bots:
     runs-on: ubuntu-latest
-    timeout-minutes: 15   # tối đa 15 phút
+    timeout-minutes: 300   # tối đa 15 phút
 
     steps:
       - name: Checkout code
