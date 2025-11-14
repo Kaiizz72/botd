@@ -1,0 +1,34 @@
+name: HT1 Bot CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Cài dependencies
+        run: npm install
+
+      # Nếu bạn thêm script "build" trong package.json
+      # - name: Build
+      #   run: npm run build
+
+      # KHÔNG nên chạy bot trên GitHub (npm start) vì runner sẽ tắt sau khi job kết thúc
+      # Nếu vẫn muốn test nhanh có chạy được hay không thì thêm:
+      # - name: Test start bot (chạy 10s rồi kill)
+      #   run: |
+      #     timeout 10s npm start || true
+      
