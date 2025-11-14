@@ -4,7 +4,8 @@
 const mineflayer = require('mineflayer')
 const {
   pathfinder,
-  Movements
+  Movements,
+  goals: { GoalNear }
 } = require('mineflayer-pathfinder')
 const pvp = require('mineflayer-pvp').plugin
 const { Vec3 } = require('vec3')
@@ -16,8 +17,22 @@ const AUTH_MODE = process.env.AUTH_MODE || 'offline'
 // 2 bot tên như yêu cầu
 const BOT_NAMES = ['Dream', 'Marlow']
 
+// Câu chat PvP tiếng Anh (gamer talk, không xúc phạm chủng tộc)
+const CHASE_LINES = [
+  "You can't run from me!",
+  "Come here, I'm not done yet!",
+  "Keep running, I'll catch you!",
+  "You think you can escape?",
+  "I'm on you!",
+  "Nice try, runner!"
+]
+
 function wait (ms) {
   return new Promise(res => setTimeout(res, ms))
+}
+
+function randChoice (arr) {
+  return arr[Math.floor(Math.random() * arr.length)]
 }
 
 function findItem (bot, names) {
@@ -42,6 +57,27 @@ function findFoodItem (bot) {
   return bot.inventory.items().find(it => foodNames.includes(it.name))
 }
 
+function findSword (bot) {
+  const swordNames = [
+    'netherite_sword',
+    'diamond_sword',
+    'iron_sword',
+    'stone_sword',
+    'golden_sword',
+    'wooden_sword'
+  ]
+  return bot.inventory.items().find(it => swordNames.includes(it.name))
+}
+
+async function equipSword (bot) {
+  try {
+    const sword = findSword(bot)
+    if (sword) {
+      await bot.equip(sword, 'hand')
+    }
+  } catch (_) {}
+}
+
 function getNearestEnemyPlayer (bot, maxDistance) {
   let best = null
   let bestDist = maxDistance
@@ -49,6 +85,8 @@ function getNearestEnemyPlayer (bot, maxDistance) {
     const e = bot.entities[id]
     if (!e || e.type !== 'player') continue
     if (!e.username || e.username === bot.username) continue
+    // Không đánh nhau giữa Dream & Marlow, coi như 1 team
+    if (BOT_NAMES.includes(e.username)) continue
     if (!e.position) continue
 
     const dist = bot.entity.position.distanceTo(e.position)
@@ -74,19 +112,20 @@ function isBotInWeb (bot) {
 
 async function ensureOffhand (bot) {
   try {
+    const now = Date.now()
     const hp = bot.health // 0–20 (mỗi 2 = 1 tim)
     if (hp <= 0) return
 
     const totem = findItem(bot, ['totem_of_undying', 'totem'])
     const gapple = findItem(bot, ['enchanted_golden_apple', 'golden_apple'])
 
-    // Nếu máu <= 3 tim (6 máu) -> ưu tiên totem ở tay trái
-    if (hp <= 6 && totem) {
+    // Nếu còn totem, và đang/nguy hiểm (máu thấp hoặc vừa bị trade mạnh) => luôn ưu tiên totem
+    if (totem && (hp <= 6 || (bot._dangerUntil && now < bot._dangerUntil))) {
       await bot.equip(totem, 'off-hand')
       return
     }
 
-    // Bình thường giữ táo vàng ở tay trái
+    // Bình thường (không nguy hiểm / hết totem) giữ táo vàng ở tay trái
     if (gapple) {
       await bot.equip(gapple, 'off-hand')
     }
@@ -211,6 +250,9 @@ async function placeWebTrap (bot, target) {
     await bot.equip(web, 'hand')
     await bot.lookAt(target.position.offset(0.5, 0.2, 0.5), true)
     await bot.placeBlock(below, new Vec3(0, 1, 0))
+
+    // Sau khi đặt bẫy quay lại cầm kiếm
+    equipSword(bot)
   } catch (_) {}
 }
 
@@ -243,6 +285,9 @@ async function shootBowAt (bot, target) {
     setTimeout(() => {
       try { bot.deactivateItem() } catch (_) {}
     }, 450)
+
+    // Bắn xong thì lại cầm kiếm
+    equipSword(bot)
   } catch (_) {}
 }
 
@@ -250,13 +295,38 @@ function setupHT1Brain (bot) {
   bot._combatState = {
     lastPearl: 0,
     lastWeb: 0,
-    lastBow: 0
+    lastBow: 0,
+    lastDist: null,
+    lastChat: 0,
+    nextWTap: 0
   }
 
   // Quản lý máu, táo vàng, totem
   bot.on('health', () => {
+    const hp = bot.health
+    if (hp <= 8 && hp > 0) {
+      // vừa bị trade mạnh / đang nguy hiểm -> giữ trạng thái danger thêm 7s
+      bot._dangerUntil = Date.now() + 7000
+    }
     ensureOffhand(bot)
     emergencyHeal(bot)
+  })
+
+  // Chết -> dừng PvP, chờ respawn
+  bot.on('death', () => {
+    bot.setControlState('jump', false)
+    bot.setControlState('sprint', false)
+    if (bot.pvp.target) bot.pvp.stop()
+  })
+
+  // Respawn -> đặt lại homePos (nếu cần) và tiếp tục đánh
+  bot.on('respawn', () => {
+    console.log(`[${bot.username}] respawned, ready to fight again`)
+    // spawn mới (vd: FFA spawn) làm home mới
+    bot._homePos = bot.entity.position.clone()
+    // reset một chút state
+    bot._combatState.lastDist = null
+    bot._dangerUntil = Date.now() + 5000
   })
 
   // Bắt đầu auto ăn
@@ -266,7 +336,36 @@ function setupHT1Brain (bot) {
   setInterval(() => {
     if (!bot.entity || !bot.entity.position) return
 
-    const target = getNearestEnemyPlayer(bot, 80) // tầm nhìn rộng
+    const now = Date.now()
+
+    // Giữ bot không đi quá xa khỏi vị trí home (~100 block)
+    if (bot._homePos) {
+      const homeDist = bot.entity.position.distanceTo(bot._homePos)
+      if (homeDist > 100) {
+        if (bot.pvp.target) bot.pvp.stop()
+        bot.setControlState('jump', false)
+        bot.setControlState('sprint', false)
+        const goal = new GoalNear(
+          bot._homePos.x,
+          bot._homePos.y,
+          bot._homePos.z,
+          2
+        )
+        bot.pathfinder.setGoal(goal)
+        // ngừng xử lý combat tick này, chờ chạy về home
+        return
+      }
+    }
+
+    let target = getNearestEnemyPlayer(bot, 80) // tầm nhìn rộng
+
+    // Không đuổi mục tiêu quá xa khỏi khu vực home
+    if (target && bot._homePos) {
+      const distFromHomeToTarget = target.position.distanceTo(bot._homePos)
+      if (distFromHomeToTarget > 100) {
+        target = null
+      }
+    }
 
     if (target) {
       // Tự động bật PvP + dí đối thủ
@@ -277,13 +376,55 @@ function setupHT1Brain (bot) {
       // luôn nhìn về phía đối thủ để combat trông pro hơn
       bot.lookAt(target.position.offset(0, 1.6, 0), true).catch(() => {})
 
-      const now = Date.now()
       const dist = bot.entity.position.distanceTo(target.position)
+
+      // W-tap / jump reset style: ở gần thì cầm kiếm + nhảy combo + tap sprint
+      if (dist < 6) {
+        equipSword(bot)
+        bot.setControlState('jump', true)
+
+        if (now > bot._combatState.nextWTap) {
+          bot._combatState.nextWTap = now + 600 // mỗi 0.6s tap một lần
+          bot.setControlState('sprint', false)
+          setTimeout(() => {
+            try {
+              bot.setControlState('sprint', true)
+            } catch (_) {}
+          }, 120) // tắt sprint một chút rồi bật lại
+        }
+      } else {
+        bot.setControlState('jump', false)
+      }
 
       // Buff speed + strength trước combat
       useBuffPotion(bot)
 
-      // Dùng ender pearl để áp sát khi khoảng cách xa
+      // Phát hiện người chơi "chạy trốn": khoảng cách tăng nhanh so với tick trước
+      if (bot._combatState.lastDist !== null) {
+        const diff = dist - bot._combatState.lastDist
+        const isRunningAway = diff > 2 && dist > 10 // vừa xa, vừa tăng nhanh
+
+        if (isRunningAway) {
+          // Chat tiếng Anh kiểu PvP khi đối thủ chạy
+          if (now - bot._combatState.lastChat > 5000) {
+            bot._combatState.lastChat = now
+            bot.chat(randChoice(CHASE_LINES))
+          }
+
+          // Ném pearl dí sát rồi đặt tơ nhanh
+          if (now - bot._combatState.lastPearl > 3500) {
+            bot._combatState.lastPearl = now
+            throwPearlAt(bot, target)
+            // cố gắng trap nhanh sau 300ms
+            setTimeout(() => {
+              placeWebTrap(bot, target)
+            }, 300)
+          }
+        }
+      }
+      bot._combatState.lastDist = dist
+
+      // Dùng ender pearl bình thường khi khoảng cách xa mà không cần đợi chạy
       if (dist > 12 && dist < 60 && now - bot._combatState.lastPearl > 5000) {
         bot._combatState.lastPearl = now
         throwPearlAt(bot, target)
@@ -301,8 +442,11 @@ function setupHT1Brain (bot) {
         shootBowAt(bot, target)
       }
     } else {
-      // Không có mục tiêu -> tắt PvP
+      // Không có mục tiêu -> tắt PvP, ngừng nhảy & sprint
       if (bot.pvp.target) bot.pvp.stop()
+      bot.setControlState('jump', false)
+      bot.setControlState('sprint', false)
+      bot._combatState.lastDist = null
     }
 
     // Nếu bot bị dính tơ -> tự thoát bằng xô nước
@@ -330,11 +474,22 @@ function createBot (name) {
     const movements = new Movements(bot, mcData)
     bot.pathfinder.setMovements(movements)
 
+    // Lưu vị trí spawn làm "home" để không đi quá 100 block
+    bot._homePos = bot.entity.position.clone()
+
     setupHT1Brain(bot)
   })
 
   bot.on('kicked', r => console.log(`[${name}] kicked:`, r))
   bot.on('error', e => console.log(`[${name}] error:`, e))
+
+  // Nếu bị disconnect (kicked/timeout/leave) thì tự reconnect sau 10s
+  bot.on('end', reason => {
+    console.log(`[${name}] disconnected (${reason}), reconnecting in 10s`)
+    setTimeout(() => {
+      createBot(name)
+    }, 10000)
+  })
 
   return bot
 }
@@ -342,6 +497,7 @@ function createBot (name) {
 ;(async () => {
   for (const name of BOT_NAMES) {
     createBot(name)
-    await wait(2500)
+    // Chờ 20s rồi mới spawn bot tiếp theo để tránh spam join
+    await wait(20000)
   }
 })()
