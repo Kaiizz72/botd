@@ -1,17 +1,16 @@
-// bot.js — Dream & Marlow HT1 PvP bots
-// Yêu cầu: node 18+, mineflayer 4.20+, pathfinder, pvp, auto-eat, vec3
+// bot.js — Dream & Marlow HT1 PvP bots (không cần mineflayer-auto-eat ESM)
+// Yêu cầu: node 18+, mineflayer 4.31+, pathfinder, pvp, vec3
 
 const mineflayer = require('mineflayer')
 const {
   pathfinder,
   Movements
 } = require('mineflayer-pathfinder')
-const autoEat = require('mineflayer-auto-eat').plugin
 const pvp = require('mineflayer-pvp').plugin
 const { Vec3 } = require('vec3')
 
-const SERVER_HOST = process.env.SERVER_HOST || 'node1.lumine.asia'
-const SERVER_PORT = Number(process.env.SERVER_PORT || 25675)
+const SERVER_HOST = process.env.SERVER_HOST || 'play2.eternalzero.cloud'
+const SERVER_PORT = Number(process.env.SERVER_PORT || 27199)
 const AUTH_MODE = process.env.AUTH_MODE || 'offline'
 
 // 2 bot tên như yêu cầu
@@ -26,8 +25,21 @@ function findItem (bot, names) {
   return bot.inventory.items().find(it => list.includes(it.name))
 }
 
-function findFirstItem (bot, names) {
-  return findItem(bot, names)
+function findFoodItem (bot) {
+  // Ưu tiên đồ ăn thường, không ăn táo vàng trong auto-eat
+  const foodNames = [
+    'cooked_beef',
+    'cooked_porkchop',
+    'cooked_chicken',
+    'bread',
+    'cooked_mutton',
+    'cooked_rabbit',
+    'baked_potato',
+    'cooked_cod',
+    'cooked_salmon',
+    'pumpkin_pie'
+  ]
+  return bot.inventory.items().find(it => foodNames.includes(it.name))
 }
 
 function getNearestEnemyPlayer (bot, maxDistance) {
@@ -65,8 +77,8 @@ async function ensureOffhand (bot) {
     const hp = bot.health // 0–20 (mỗi 2 = 1 tim)
     if (hp <= 0) return
 
-    const totem = findFirstItem(bot, ['totem_of_undying', 'totem'])
-    const gapple = findFirstItem(bot, ['enchanted_golden_apple', 'golden_apple'])
+    const totem = findItem(bot, ['totem_of_undying', 'totem'])
+    const gapple = findItem(bot, ['enchanted_golden_apple', 'golden_apple'])
 
     // Nếu máu <= 3 tim (6 máu) -> ưu tiên totem ở tay trái
     if (hp <= 6 && totem) {
@@ -88,7 +100,7 @@ async function emergencyHeal (bot) {
 
     // Không để xuống dưới 3 tim: nếu <= 8 máu (4 tim) thì ăn táo
     if (hp <= 8) {
-      const gapple = findFirstItem(bot, ['enchanted_golden_apple', 'golden_apple'])
+      const gapple = findItem(bot, ['enchanted_golden_apple', 'golden_apple'])
       if (gapple) {
         await bot.equip(gapple, 'hand')
         bot.activateItem()
@@ -100,9 +112,41 @@ async function emergencyHeal (bot) {
   } catch (_) {}
 }
 
+async function autoEatLoop (bot) {
+  if (bot._autoEating) return
+  bot._autoEating = true
+
+  const eatInterval = 1200 // ~1.2s
+
+  const eatTick = async () => {
+    try {
+      if (!bot.player || !bot.entity) return
+      if (bot.health <= 0) return
+
+      // bot.food: 0–20 (20 = full thanh đói)
+      if (bot.food < 16) { // đói xuống dưới 8 "đùi"
+        const food = findFoodItem(bot)
+        if (food) {
+          await bot.equip(food, 'hand')
+          bot.activateItem()
+          setTimeout(() => {
+            try { bot.deactivateItem() } catch (_) {}
+          }, 900)
+        }
+      }
+    } catch (_) {
+      // ignore
+    } finally {
+      setTimeout(eatTick, eatInterval)
+    }
+  }
+
+  setTimeout(eatTick, eatInterval)
+}
+
 async function throwPearlAt (bot, target) {
   try {
-    const pearl = findFirstItem(bot, 'ender_pearl')
+    const pearl = findItem(bot, 'ender_pearl')
     if (!pearl) return
 
     await bot.equip(pearl, 'hand')
@@ -114,7 +158,7 @@ async function throwPearlAt (bot, target) {
 async function escapeWebWithWater (bot) {
   try {
     if (bot._escapingWeb) return
-    const waterBucket = findFirstItem(bot, 'water_bucket')
+    const waterBucket = findItem(bot, 'water_bucket')
     if (!waterBucket) return
 
     bot._escapingWeb = true
@@ -131,7 +175,7 @@ async function escapeWebWithWater (bot) {
     // Chờ nước phá tơ rồi hốt lại nước
     setTimeout(async () => {
       try {
-        const bucket = findFirstItem(bot, 'bucket')
+        const bucket = findItem(bot, 'bucket')
         if (!bucket) return
         const water = bot.findBlock({
           matching: b => b && b.name === 'water',
@@ -155,7 +199,7 @@ async function escapeWebWithWater (bot) {
 
 async function placeWebTrap (bot, target) {
   try {
-    const web = findFirstItem(bot, ['cobweb', 'web'])
+    const web = findItem(bot, ['cobweb', 'web'])
     if (!web) return
 
     const dist = bot.entity.position.distanceTo(target.position)
@@ -175,7 +219,7 @@ async function useBuffPotion (bot) {
     const now = Date.now()
     if (bot._lastPotion && now - bot._lastPotion < 8000) return
 
-    const pot = findFirstItem(bot, ['potion', 'splash_potion', 'lingering_potion'])
+    const pot = findItem(bot, ['potion', 'splash_potion', 'lingering_potion'])
     if (!pot) return
 
     bot._lastPotion = now
@@ -189,8 +233,8 @@ async function useBuffPotion (bot) {
 
 async function shootBowAt (bot, target) {
   try {
-    const bow = findFirstItem(bot, 'bow')
-    const arrow = findFirstItem(bot, ['arrow', 'tipped_arrow'])
+    const bow = findItem(bot, 'bow')
+    const arrow = findItem(bot, ['arrow', 'tipped_arrow'])
     if (!bow || !arrow) return
 
     await bot.equip(bow, 'hand')
@@ -214,6 +258,9 @@ function setupHT1Brain (bot) {
     ensureOffhand(bot)
     emergencyHeal(bot)
   })
+
+  // Bắt đầu auto ăn
+  autoEatLoop(bot)
 
   // Vòng lặp combat chính
   setInterval(() => {
@@ -274,18 +321,10 @@ function createBot (name) {
   })
 
   bot.loadPlugin(pathfinder)
-  bot.loadPlugin(autoEat)
   bot.loadPlugin(pvp)
 
   bot.once('spawn', () => {
     console.log(`[${name}] joined with HT1 brain!`)
-
-    // Auto ăn đồ thường (không tốn táo vàng)
-    bot.autoEat.options = {
-      priority: 'foodPoints',
-      startAt: 14,
-      bannedFood: ['golden_apple', 'enchanted_golden_apple']
-    }
 
     const mcData = require('minecraft-data')(bot.version)
     const movements = new Movements(bot, mcData)
