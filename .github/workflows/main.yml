@@ -1,14 +1,12 @@
-name: HT1 Bot CI
+name: Start HT1 Bots
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:  # để bạn bấm "Run workflow" bằng tay
 
 jobs:
-  build:
+  run-bots:
     runs-on: ubuntu-latest
+    timeout-minutes: 15   # tối đa 15 phút
 
     steps:
       - name: Checkout code
@@ -19,16 +17,14 @@ jobs:
         with:
           node-version: 18
 
-      - name: Cài dependencies
+      - name: Install deps
         run: npm install
 
-      # Nếu bạn thêm script "build" trong package.json
-      # - name: Build
-      #   run: npm run build
-
-      # KHÔNG nên chạy bot trên GitHub (npm start) vì runner sẽ tắt sau khi job kết thúc
-      # Nếu vẫn muốn test nhanh có chạy được hay không thì thêm:
-      # - name: Test start bot (chạy 10s rồi kill)
-      #   run: |
-      #     timeout 10s npm start || true
-      
+      - name: Start Dream & Marlow for 10 minutes
+        env:
+          SERVER_HOST: node1.lumine.asia   # đổi thành IP / domain server bạn
+          SERVER_PORT: 25675                     # đổi theo port server
+          AUTH_MODE: offline                     # hoặc 'microsoft' nếu xài acc real
+        run: |
+          timeout 60000s npm start || true
+          
