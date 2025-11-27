@@ -15,7 +15,7 @@ const SERVER_PORT = Number(process.env.SERVER_PORT || 27199)
 const AUTH_MODE = process.env.AUTH_MODE || 'offline'
 
 // 2 bot tên như yêu cầu
-const BOT_NAMES = ['Dream', 'Marlow']
+const BOT_NAMES = ['Dream', 'Marlow', 'Phongcantv', 'Baochannn81', 'Cuunon66', 'Toiyeuanh', 'Meoimss8']
 
 // Câu chat PvP tiếng Anh (gamer talk, không xúc phạm chủng tộc)
 const CHASE_LINES = [
